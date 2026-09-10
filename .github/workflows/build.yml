@@ -1,1 +1,64 @@
+name: Build Android APK
 
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android
+        uses: android-actions/setup-android@v3
+
+      - name: Extract source
+        run: |
+          rm -rf extracted
+          mkdir extracted
+          unzip -q source.zip -d extracted
+
+      - name: Build APK
+        run: |
+          GRADLEW=$(find extracted -type f -name gradlew | head -1)
+
+          if [ -z "$GRADLEW" ]; then
+            echo "gradlew پیدا نشد"
+            exit 1
+          fi
+
+          PROJECT_DIR=$(dirname "$GRADLEW")
+
+          cd "$PROJECT_DIR"
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      - name: Prepare APK
+        run: |
+          mkdir -p apk-output
+
+          APK=$(find extracted -type f -path "*/app/build/outputs/apk/debug/*.apk" | head -1)
+
+          if [ -z "$APK" ]; then
+            echo "APK پیدا نشد"
+            exit 1
+          fi
+
+          cp "$APK" apk-output/app-debug.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Android-APK
+          path: apk-output/app-debug.apk
