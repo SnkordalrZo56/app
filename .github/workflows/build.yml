@@ -1,21 +1,192 @@
-      - name: Find and extract source
-        run: |
-          echo "Files in repository:"
-          find . -maxdepth 3 -type f
+name: Build Android APK
 
-          ZIP_FILE=$(find . -type f -iname "*.zip" | head -1)
+on:
+  workflow_dispatch:
+  push:
+
+jobs:
+  build:
+    name: Build APK
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+
+      - name: Show Repository Files
+        run: |
+          echo "========== FILES =========="
+          find . -maxdepth 4 -type f
+          echo "==========================="
+
+      - name: Find ZIP File
+        id: findzip
+        shell: bash
+        run: |
+          ZIP_FILE=$(find . \
+            -type f \
+            -iname "*.zip" \
+            -not -path "./.git/*" \
+            | head -1)
 
           if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: هیچ فایل ZIP داخل Repository پیدا نشد"
+            echo "======================================"
+            echo "ERROR: هیچ فایل ZIP پیدا نشد"
+            echo "فایل ZIP سورس را داخل Repository آپلود کنید"
+            echo "======================================"
             exit 1
           fi
 
-          echo "Found ZIP: $ZIP_FILE"
+          echo "ZIP پیدا شد:"
+          echo "$ZIP_FILE"
 
+          echo "zip_file=$ZIP_FILE" >> "$GITHUB_OUTPUT"
+
+      - name: Extract Android Source
+        shell: bash
+        run: |
           rm -rf extracted
-          mkdir extracted
+          mkdir -p extracted
 
-          unzip -q "$ZIP_FILE" -d extracted
+          echo "Extracting:"
+          echo "${{ steps.findzip.outputs.zip_file }}"
 
-          echo "Extracted files:"
-          find extracted -maxdepth 3 -type f
+          unzip -q "${{ steps.findzip.outputs.zip_file }}" -d extracted
+
+          echo ""
+          echo "========== EXTRACTED =========="
+          find extracted -maxdepth 5 -type f
+          echo "==============================="
+
+      - name: Find Android Project
+        id: project
+        shell: bash
+        run: |
+          SETTINGS=$(find extracted \
+            -type f \
+            \( -name "settings.gradle" -o -name "settings.gradle.kts" \) \
+            | head -1)
+
+          if [ -n "$SETTINGS" ]; then
+            PROJECT_DIR=$(dirname "$SETTINGS")
+          else
+            BUILD_FILE=$(find extracted \
+              -type f \
+              \( -name "build.gradle" -o -name "build.gradle.kts" \) \
+              | while read FILE; do
+                  DIR=$(dirname "$FILE")
+                  if [ -d "$DIR/app" ]; then
+                    echo "$FILE"
+                    break
+                  fi
+                done)
+
+            if [ -z "$BUILD_FILE" ]; then
+              echo "======================================"
+              echo "ERROR: پروژه Android پیدا نشد"
+              echo "settings.gradle یا build.gradle پیدا نشد"
+              echo "======================================"
+              exit 1
+            fi
+
+            PROJECT_DIR=$(dirname "$BUILD_FILE")
+          fi
+
+          PROJECT_DIR=$(realpath "$PROJECT_DIR")
+
+          echo "Android project:"
+          echo "$PROJECT_DIR"
+
+          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Setup Gradle 8.9
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "8.9"
+
+      - name: Show Android Project
+        shell: bash
+        run: |
+          cd "${{ steps.project.outputs.project_dir }}"
+
+          echo "========== PROJECT =========="
+          pwd
+          ls -la
+          echo "============================="
+
+      - name: Build Debug APK
+        shell: bash
+        run: |
+          cd "${{ steps.project.outputs.project_dir }}"
+
+          if [ -f "./gradlew" ]; then
+
+            echo "Using Gradle Wrapper"
+
+            chmod +x ./gradlew
+
+            ./gradlew \
+              --no-daemon \
+              --stacktrace \
+              assembleDebug
+
+          else
+
+            echo "gradlew پیدا نشد"
+            echo "Using Gradle 8.9"
+
+            gradle \
+              --no-daemon \
+              --stacktrace \
+              assembleDebug
+
+          fi
+
+      - name: Find Generated APK
+        id: apk
+        shell: bash
+        run: |
+          APK_FILE=$(find "${{ steps.project.outputs.project_dir }}" \
+            -type f \
+            -name "*.apk" \
+            -path "*/build/outputs/apk/*" \
+            | head -1)
+
+          if [ -z "$APK_FILE" ]; then
+            echo "======================================"
+            echo "ERROR: فایل APK ساخته نشد"
+            echo "======================================"
+
+            find "${{ steps.project.outputs.project_dir }}" \
+              -type f \
+              -name "*.apk"
+
+            exit 1
+          fi
+
+          echo "APK ساخته شد:"
+          echo "$APK_FILE"
+
+          mkdir -p final-apk
+
+          cp "$APK_FILE" final-apk/PersianTestApp.apk
+
+          echo "apk_file=final-apk/PersianTestApp.apk" >> "$GITHUB_OUTPUT"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Persian-Android-APK
+          path: final-apk/PersianTestApp.apk
+          if-no-files-found: error
+          retention-days: 30
